@@ -1,90 +1,85 @@
-//Pin definitions
-#define RELAY_STATE 2
-#define AMP_SIGNAL 3
+//Pin for reading optical sensor impulsions
+#define fourchePin 2   
 
-//Solution 1 --> Threshold levels
-int reading;
-int lowerLimit = 230;
-int higherLimit = 660;
+//Gate pin for a MOSFET driver
+#define InputGrille 3  
+#define TWO_PI 6.283185307179586476925286766559
 
-//Solution 2 --> 2 claps required
-bool clap1=false;
-bool clap2=false;
+#include <PID_v1.h>
 
-//Solution 3 --> Interval requirement
-int clapShortInterval= 500;
-int clapLongInterval = 1000;
+//PID controller variables and gain values
+double Setpoint, Input, Output,Kp = 1,Ki = 1000,Kd = 10;
 
-//Solution 4 --> Silence requirements
-int silenceShortInterval= 200;
-int silenceLongInterval= 500;
+//Setup controller
+PID myPID(&Input, &Output, &Setpoint,Kp,Ki,Kd, DIRECT);
 
-//Timers
-unsigned long checkClap;
-unsigned long currentTimer;
+volatile int count,countold,trou=20;   
 
-void setup(){ 
-  digitalWrite(RELAY_STATE,LOW);
-  pinMode(RELAY_STATE,OUTPUT); 
+//tempsRotDebut: time at the beginning of a revolution
+//tempsRotFin: time at the end of the revolution
+//tempsRotTotal: difference between these two times
+unsigned long temps = 0, tempsRotDebut=0, tempsRotFin=0, tempsRotTotal=0;  
+
+//125 cm for the disk radius
+float rayonDisc=0.0125,vitesse=0.0;  
+
+void setup()
+{
+  //PID controller definitions
+  Input = vitesse;
+  Setpoint = 3;
+
+  //Turn on PID
+  myPID.SetMode(AUTOMATIC);
+
+  //Initialize counter at 0
+  count = 0;
+  countold = 0; 
+  
+  pinMode(fourchePin, INPUT);
+
+  //Interrupt to catch optical sensor impulsion
+  attachInterrupt(digitalPinToInterrupt(fourchePin), impulseTrigger, FALLING);   
+
+  Serial.begin(2000000); 
+  Serial.println("VITESSE DE VOITURE");
+
 }
 
-void loop() {  
-  checkReading();
-  triggerRelay();
-}
 
-void switchRelay(){
-  if(digitalRead(RELAY_STATE)==HIGH){
-    digitalWrite(RELAY_STATE,LOW);
- }
-  else{ 
-    digitalWrite(RELAY_STATE,HIGH);
+void loop()
+{
+  //this code only occurs if an impulsion is detected
+  if (countold != count)   
+  {
+    if(count>=trou){
+      //Calculation: time it takes for one full revolution
+      tempsRotFin=temps;
+      tempsRotTotal=tempsRotFin-tempsRotDebut;
+      tempsRotDebut=tempsRotFin;
+
+      //Speed calculation (km/hr)
+      vitesse=3600*TWO_PI*rayonDisc/(tempsRotTotal);
+
+      //Reset the counter at 0 (new revolution)
+      count=0;
+
+      //Display speed
+      Serial.print("   VITESSE (km/h): ");
+      Serial.println(vitesse,5);         
+    }
+    
+    countold = count;
+    
+    //Control system    
+    Input = vitesse;
+    myPID.Compute();
+    analogWrite(InputGrille,Output);
   }
 }
 
-void checkReading(){
-  reading = analogRead(AMP_SIGNAL);
-  Serial.println(reading);
-}
-
-void triggerRelay(){
-  if ((reading > higherLimit || reading < lowerLimit) && clap1==false && clap2==false){
-    clap1=true;
-    checkClap=millis();
-}
-
-//Clap 1 is heard --> check for Clap 2
-  while(clap1==true){
-    currentTimer=millis();
-    if (currentTimer-checkClap>=clapShortInterval && currentTimer-checkClap<= clapLongInterval){
-      checkReading();
-        if ((reading > higherLimit || reading < lowerLimit)&& clap2==false){
-          clap2=true;
-          clap1=false;
-          checkClap=millis();
-        }
-    }
-  //If Clap 2 is not heard within interval, reset the system
-  else if (currentTimer-checkClap>clapLongInterval){
-    clap1=false;
-  }
-}
-
-
-//Clap 2 is heard --> check for silence
-while(clap2==true){
-  currentTimer=millis();
-  if (currentTimer-checkClap>=silenceShortInterval){
-      checkReading();
-      if (currentTimer-checkClap>=silenceLongInterval){
-        switchRelay();
-        clap2=false;
-        delay(1500); //avoids picking up relay switching (clicking) noise
-    }
-      //If there is noise after the silence interval, reset the system
-      else if(reading > higherLimit || reading < lowerLimit && currentTimer-checkClap<silenceLongInterval ){
-        clap2=false;
-      }
-    }
-  }
+void impulseTrigger()
+{
+  temps = millis();
+  count++;   
 }
